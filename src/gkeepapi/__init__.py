@@ -9,11 +9,13 @@ import random
 import re
 import time
 from collections.abc import Callable, Iterator
-from typing import IO, Any
+from typing import IO, Any, Protocol, runtime_checkable
 from uuid import getnode as get_mac
 
 import gpsoauth
 import requests
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 
 from . import exception
 from . import node as _node
@@ -21,15 +23,36 @@ from . import node as _node
 logger = logging.getLogger(__name__)
 
 
-class APIAuth:
-    """Authentication token manager"""
+@runtime_checkable
+class Auth(Protocol):
+    """Authentication token manager interface"""
+
+    def getAuthToken(self) -> str | None:
+        """Gets the auth token.
+
+        Returns:
+            The auth token.
+        """
+        ...
+
+    def refresh(self) -> str:
+        """Refresh the OAuth token.
+
+        Returns:
+            The auth token.
+        """
+        ...
+
+
+class MasterTokenAuth:
+    """Authentication token manager using Google master tokens"""
 
     def __init__(self, scopes: str) -> None:
         """Construct API authentication manager"""
-        self._master_token = None
-        self._auth_token = None
-        self._email = None
-        self._device_id = None
+        self._master_token: str | None = None
+        self._auth_token: str | None = None
+        self._email: str | None = None
+        self._device_id: str | None = None
         self._scopes = scopes
 
     def login(self, email: str, password: str, device_id: str) -> None:
@@ -171,12 +194,45 @@ class APIAuth:
         self._device_id = None
 
 
+class OAuth2Auth:
+    """Authentication token manager using standard Google OAuth2 Credentials"""
+
+    def __init__(self, credentials: Credentials) -> None:
+        """Construct authentication manager with standard Google credentials.
+
+        Args:
+            credentials: The google-auth credentials object.
+        """
+        self._credentials = credentials
+
+    def getAuthToken(self) -> str | None:
+        """Gets the auth token from credentials.
+
+        Returns:
+            The account auth token.
+        """
+        return self._credentials.token
+
+    def refresh(self) -> str:
+        """Refresh the OAuth token using credentials.
+
+        Returns:
+            The refreshed auth token.
+        """
+        self._credentials.refresh(Request())
+        return self._credentials.token
+
+
+# Alias for backward compatibility
+APIAuth = MasterTokenAuth
+
+
 class API:
     """Base API wrapper"""
 
     RETRY_CNT = 2
 
-    def __init__(self, base_url: str, auth: APIAuth | None = None) -> None:
+    def __init__(self, base_url: str, auth: Auth | None = None) -> None:
         """Construct a low-level API client"""
         self._session = requests.Session()
         self._auth = auth
@@ -738,29 +794,37 @@ class Keep:
 
     def authenticate(
         self,
-        email: str,
-        master_token: str,
+        email: str | Credentials,
+        master_token: str | None = None,
         state: dict | None = None,
         sync: bool = True,
         device_id: str | None = None,
     ) -> None:
-        """Authenticate to Google with the provided master token & sync.
+        """Authenticate to Google and sync.
 
         Args:
-            email: The account to use.
-            master_token: The master token.
+            email: The account email OR a google.oauth2.credentials.Credentials object.
+            master_token: The master token (only if email is a string).
             state: Serialized state to load.
             sync: Whether to sync data.
             device_id: Device id.
 
         Raises:
             LoginException: If there was a problem logging in.
+            ValueError: If arguments are inconsistent.
         """
-        auth = APIAuth(self.OAUTH_SCOPES)
-        if device_id is None:
-            device_id = f"{get_mac():x}"
+        if isinstance(email, Credentials):
+            auth: Auth = OAuth2Auth(email)
+        elif isinstance(email, str):
+            if master_token is None:
+                raise ValueError("master_token is required when email is a string")
+            auth = MasterTokenAuth(self.OAUTH_SCOPES)
+            if device_id is None:
+                device_id = f"{get_mac():x}"
+            auth.load(email, master_token, device_id)
+        else:
+            raise TypeError("email must be a string or Credentials object")
 
-        auth.load(email, master_token, device_id)
         self.load(auth, state, sync)
 
     def getMasterToken(self) -> str:
@@ -771,7 +835,7 @@ class Keep:
         """
         return self._keep_api.getAuth().getMasterToken()
 
-    def load(self, auth: APIAuth, state: dict | None = None, sync: bool = True) -> None:
+    def load(self, auth: Auth, state: dict | None = None, sync: bool = True) -> None:
         """Authenticate to Google with a prepared authentication object & sync.
 
         Args:

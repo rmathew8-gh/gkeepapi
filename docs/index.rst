@@ -38,10 +38,21 @@ All interaction with Google Keep is done through a :py:class:`Keep` object, whic
 Authenticating
 --------------
 
-The client uses the (private) mobile Google Keep API. A valid OAuth token is generated via :py:mod:`gpsoauth`, which requires a master token for the account. These tokens are so called because they have full access to your account. Protect them like you would a password::
+The client supports two authentication methods:
+
+1. **OAuth2 Credentials (Modern)**: This is the recommended method for new applications. It uses standard Google OAuth2 access and refresh tokens, which can be managed via the `google-auth` library. This method is more secure and compatible with 2FA::
+
+    from google.oauth2.credentials import Credentials
+    creds = Credentials(token=..., refresh_token=..., client_id=..., client_secret=...)
+    keep = gkeepapi.Keep()
+    keep.authenticate(creds)
+
+2. **Master Token (Unofficial)**: This uses a (private) mobile Google Keep API. A valid OAuth token is generated via :py:mod:`gpsoauth`, which requires a master token for the account::
 
     keep = gkeepapi.Keep()
     keep.authenticate('user@gmail.com', master_token)
+
+These tokens are so called because they have full access to your account. Protect them like you would a password.
 
 Rather than storing the token in the script, consider using your platform secrets store::
 
